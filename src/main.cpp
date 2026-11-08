@@ -1,149 +1,118 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
 #include <MFRC522.h>
 
-#define RFID_SS   5
-#define RFID_RST  4
-#define RFID_SCK  12
-#define RFID_MISO 13
-#define RFID_MOSI 11
+// TFT pins
+#define TFT_CS   8
+#define TFT_DC   9
+#define TFT_RST  10
 
+// Shared SPI
+#define SPI_SCK  12
+#define SPI_MISO 13
+#define SPI_MOSI 11
+
+// RFID
+#define RFID_SS  5
+#define RFID_RST 4
+
+Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 MFRC522 rfid(RFID_SS, RFID_RST);
 
-void printHex(byte value) {
-    if (value < 0x10) Serial.print("0");
-    Serial.print(value, HEX);
+void showHeader() {
+    tft.fillScreen(ST77XX_BLACK);
+
+    tft.setTextSize(2);
+    tft.setTextColor(ST77XX_CYAN);
+
+    tft.setCursor(10, 10);
+    tft.println("RFID ANALYZER");
+
+    tft.drawFastHLine(10, 40, 300, ST77XX_WHITE);
 }
 
-void printCardType(MFRC522::PICC_Type type) {
-    Serial.print("Card type: ");
-    Serial.println(rfid.PICC_GetTypeName(type));
+void showWaiting() {
+    showHeader();
+
+    tft.setTextColor(ST77XX_GREEN);
+    tft.setCursor(10, 75);
+    tft.println("RC522 READY");
+
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(10, 125);
+    tft.println("Waiting for");
+
+    tft.setCursor(10, 155);
+    tft.println("card...");
 }
 
-void analyzeCard() {
-    Serial.println("\n========== RFID CARD ANALYZER ==========");
+void showCard() {
+    showHeader();
 
-    // UID
-    Serial.println("\n[1] CARD IDENTIFICATION");
+    tft.setTextColor(ST77XX_GREEN);
+    tft.setCursor(10, 60);
+    tft.println("CARD DETECTED");
 
-    Serial.print("UID: ");
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(10, 105);
+    tft.println("UID:");
+
+    tft.setTextColor(ST77XX_YELLOW);
+    tft.setCursor(10, 135);
+
     for (byte i = 0; i < rfid.uid.size; i++) {
-        printHex(rfid.uid.uidByte[i]);
-        Serial.print(" ");
-    }
-    Serial.println();
-
-    Serial.printf("UID length: %d bytes\n", rfid.uid.size);
-
-    // SAK
-    Serial.print("SAK: 0x");
-    printHex(rfid.uid.sak);
-    Serial.println();
-
-    // ATQA
-    byte atqa[2];
-    byte atqaSize = sizeof(atqa);
-
-    MFRC522::StatusCode status =
-        rfid.PICC_WakeupA(atqa, &atqaSize);
-
-    if (status == MFRC522::STATUS_OK ||
-        status == MFRC522::STATUS_COLLISION) {
-        Serial.print("ATQA: ");
-        for (byte i = 0; i < atqaSize; i++) {
-            printHex(atqa[i]);
-            Serial.print(" ");
+        if (rfid.uid.uidByte[i] < 0x10) {
+            tft.print("0");
         }
-        Serial.println();
-    } else {
-        Serial.println("ATQA: unavailable");
-    }
 
-    // Card type
-    Serial.println("\n[2] CARD CHARACTERISTICS");
+        tft.print(rfid.uid.uidByte[i], HEX);
+        tft.print(" ");
+    }
 
     MFRC522::PICC_Type type =
         rfid.PICC_GetType(rfid.uid.sak);
 
-    printCardType(type);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setCursor(10, 190);
+    tft.println("CARD TYPE:");
 
-    if (type == MFRC522::PICC_TYPE_MIFARE_1K) {
-        Serial.println("Reported capacity: 1024 bytes");
-        Serial.println("Reported sectors: 16");
-        Serial.println("Reported blocks: 64");
-    } else if (type == MFRC522::PICC_TYPE_MIFARE_4K) {
-        Serial.println("Reported capacity: 4096 bytes");
-        Serial.println("Reported sectors: 40");
-        Serial.println("Reported blocks: 256");
-    } else {
-        Serial.println("Memory layout: not determined");
-    }
-
-    // Security assessment
-    Serial.println("\n[3] SECURITY CHARACTERISTICS");
-
-    if (type == MFRC522::PICC_TYPE_MIFARE_1K ||
-        type == MFRC522::PICC_TYPE_MIFARE_4K) {
-        Serial.println("Authentication: supported");
-        Serial.println("Sector access: may be protected");
-        Serial.println("Encryption: card-family dependent");
-        Serial.println("UID changeability: not determined");
-    } else {
-        Serial.println("Security details: not determined");
-    }
-
-    // Conclusion
-    Serial.println("\n[4] COMPATIBILITY REPORT");
-
-    Serial.println("Card detected: YES");
-    Serial.println("Protocol compatibility: ISO14443A reader");
-
-    Serial.println(
-        "Writable memory: NOT TESTED"
-    );
-
-    Serial.println(
-        "Complete card duplication: NOT DETERMINED"
-    );
-
-    Serial.println("========================================");
-
-    rfid.PICC_HaltA();
-    rfid.PCD_StopCrypto1();
+    tft.setTextColor(ST77XX_CYAN);
+    tft.setCursor(10, 220);
+    tft.println(rfid.PICC_GetTypeName(type));
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);
+    delay(2000);
 
-    Serial.println("\nRFID CARD ANALYZER v1.0");
+    // Keep both SPI devices inactive
+    pinMode(TFT_CS, OUTPUT);
+    pinMode(RFID_SS, OUTPUT);
 
-    SPI.begin(
-        RFID_SCK,
-        RFID_MISO,
-        RFID_MOSI,
-        RFID_SS
-    );
+    digitalWrite(TFT_CS, HIGH);
+    digitalWrite(RFID_SS, HIGH);
+
+    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, RFID_SS);
+
+    // Initialize TFT
+    tft.init(240, 320);
+    tft.setRotation(1);
+
+    showWaiting();
+
+    // Initialize RC522
+    digitalWrite(TFT_CS, HIGH);
+    digitalWrite(RFID_SS, HIGH);
 
     rfid.PCD_Init();
-    delay(50);
+    delay(100);
 
-    byte version = rfid.PCD_ReadRegister(
-        MFRC522::VersionReg
-    );
+    Serial.println("RFID ANALYZER READY");
 
-    Serial.print("RC522 version: 0x");
-    printHex(version);
-    Serial.println();
-
-    if (version == 0x00 || version == 0xFF) {
-        Serial.println("ERROR: Reader communication failed.");
-        while (true) delay(1000);
-    }
-
-    Serial.println("Reader ready.");
-    Serial.println("Place a card near the reader.");
+    rfid.PCD_DumpVersionToSerial();
 }
 
 void loop() {
@@ -155,7 +124,33 @@ void loop() {
         return;
     }
 
-    analyzeCard();
+    Serial.println("\n========== CARD DETECTED ==========");
 
-    delay(1000);
+    Serial.print("UID: ");
+
+    for (byte i = 0; i < rfid.uid.size; i++) {
+        if (rfid.uid.uidByte[i] < 0x10) {
+            Serial.print("0");
+        }
+
+        Serial.print(rfid.uid.uidByte[i], HEX);
+        Serial.print(" ");
+    }
+
+    Serial.println();
+
+    MFRC522::PICC_Type type =
+        rfid.PICC_GetType(rfid.uid.sak);
+
+    Serial.print("CARD TYPE: ");
+    Serial.println(rfid.PICC_GetTypeName(type));
+
+    showCard();
+
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
+
+    delay(2000);
+
+    showWaiting();
 }
