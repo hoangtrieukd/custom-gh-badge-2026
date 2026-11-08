@@ -1,197 +1,161 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
+#include <MFRC522.h>
 
-#include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
+#define RFID_SS   5
+#define RFID_RST  4
+#define RFID_SCK  12
+#define RFID_MISO 13
+#define RFID_MOSI 11
 
-#include "github_logo.h"
-#include "secrets.h"
+MFRC522 rfid(RFID_SS, RFID_RST);
 
-#define TFT_CS 8
-#define TFT_RST 10
-#define TFT_DC 9
-#define TFT_MOSI 11
-#define TFT_SCLK 12
-#define TFT_MISO 13
-
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
-
-const char *githubUsername = "hoangtrieukd";
-
-const char *githubApiUrl =
-    "https://api.github.com/users/hoangtrieukd";
-
-Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
-
-void drawBadge()
-{
-    tft.fillScreen(ST77XX_BLACK);
-
-    int logoX = (SCREEN_WIDTH - GITHUB_LOGO_WIDTH) / 2;
-    int logoY = 35;
-
-    tft.drawBitmap(
-        logoX,
-        logoY,
-        github_logo_bitmap,
-        GITHUB_LOGO_WIDTH,
-        GITHUB_LOGO_HEIGHT,
-        ST77XX_WHITE);
-
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setTextSize(2);
-    tft.setTextWrap(false);
-
-    int16_t textX, textY;
-    uint16_t textW, textH;
-
-    tft.getTextBounds(
-        githubUsername, 0, 0,
-        &textX, &textY, &textW, &textH);
-
-    tft.setCursor((SCREEN_WIDTH - textW) / 2, 180);
-    tft.print(githubUsername);
+void printHex(byte value) {
+    if (value < 0x10) Serial.print("0");
+    Serial.print(value, HEX);
 }
 
-void connectWiFi()
-{
-    Serial.println("\nConnecting to Wi-Fi...");
+void printCardType(MFRC522::PICC_Type type) {
+    Serial.print("Card type: ");
+    Serial.println(rfid.PICC_GetTypeName(type));
+}
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+void analyzeCard() {
+    Serial.println("\n========== RFID CARD ANALYZER ==========");
 
-    unsigned long startTime = millis();
+    // UID
+    Serial.println("\n[1] CARD IDENTIFICATION");
 
-    while (WiFi.status() != WL_CONNECTED &&
-           millis() - startTime < 15000)
-    {
-        delay(500);
-        Serial.print(".");
+    Serial.print("UID: ");
+    for (byte i = 0; i < rfid.uid.size; i++) {
+        printHex(rfid.uid.uidByte[i]);
+        Serial.print(" ");
     }
-
     Serial.println();
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        Serial.println("Wi-Fi connected!");
-        Serial.print("IP: ");
-        Serial.println(WiFi.localIP());
+    Serial.printf("UID length: %d bytes\n", rfid.uid.size);
+
+    // SAK
+    Serial.print("SAK: 0x");
+    printHex(rfid.uid.sak);
+    Serial.println();
+
+    // ATQA
+    byte atqa[2];
+    byte atqaSize = sizeof(atqa);
+
+    MFRC522::StatusCode status =
+        rfid.PICC_WakeupA(atqa, &atqaSize);
+
+    if (status == MFRC522::STATUS_OK ||
+        status == MFRC522::STATUS_COLLISION) {
+        Serial.print("ATQA: ");
+        for (byte i = 0; i < atqaSize; i++) {
+            printHex(atqa[i]);
+            Serial.print(" ");
+        }
+        Serial.println();
+    } else {
+        Serial.println("ATQA: unavailable");
     }
-    else
-    {
-        Serial.println("Wi-Fi connection failed.");
+
+    // Card type
+    Serial.println("\n[2] CARD CHARACTERISTICS");
+
+    MFRC522::PICC_Type type =
+        rfid.PICC_GetType(rfid.uid.sak);
+
+    printCardType(type);
+
+    if (type == MFRC522::PICC_TYPE_MIFARE_1K) {
+        Serial.println("Reported capacity: 1024 bytes");
+        Serial.println("Reported sectors: 16");
+        Serial.println("Reported blocks: 64");
+    } else if (type == MFRC522::PICC_TYPE_MIFARE_4K) {
+        Serial.println("Reported capacity: 4096 bytes");
+        Serial.println("Reported sectors: 40");
+        Serial.println("Reported blocks: 256");
+    } else {
+        Serial.println("Memory layout: not determined");
     }
+
+    // Security assessment
+    Serial.println("\n[3] SECURITY CHARACTERISTICS");
+
+    if (type == MFRC522::PICC_TYPE_MIFARE_1K ||
+        type == MFRC522::PICC_TYPE_MIFARE_4K) {
+        Serial.println("Authentication: supported");
+        Serial.println("Sector access: may be protected");
+        Serial.println("Encryption: card-family dependent");
+        Serial.println("UID changeability: not determined");
+    } else {
+        Serial.println("Security details: not determined");
+    }
+
+    // Conclusion
+    Serial.println("\n[4] COMPATIBILITY REPORT");
+
+    Serial.println("Card detected: YES");
+    Serial.println("Protocol compatibility: ISO14443A reader");
+
+    Serial.println(
+        "Writable memory: NOT TESTED"
+    );
+
+    Serial.println(
+        "Complete card duplication: NOT DETERMINED"
+    );
+
+    Serial.println("========================================");
+
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
 }
 
-void fetchGitHubProfile()
-{
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        Serial.println("No Wi-Fi connection. Cannot fetch profile.");
-        return;
-    }
-
-    Serial.println("\nFetching GitHub profile...");
-
-    WiFiClientSecure client;
-
-    // Temporary prototype setting.
-    // We'll configure certificate validation later.
-    client.setInsecure();
-
-    HTTPClient http;
-
-    http.setTimeout(10000);
-
-    if (!http.begin(client, githubApiUrl))
-    {
-        Serial.println("Could not initialize HTTP connection.");
-        return;
-    }
-
-    http.addHeader("User-Agent", "ESP32-GitHub-Badge");
-    http.addHeader("Accept", "application/vnd.github+json");
-
-    int httpCode = http.GET();
-
-    if (httpCode == HTTP_CODE_OK)
-    {
-        String response = http.getString();
-
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, response);
-
-        if (error)
-        {
-            Serial.print("JSON parsing failed: ");
-            Serial.println(error.c_str());
-            http.end();
-            return;
-        }
-
-        Serial.println("\n========== GITHUB PROFILE ==========");
-
-        Serial.print("Username: ");
-        Serial.println(doc["login"] | "N/A");
-
-        Serial.print("Name: ");
-        Serial.println(doc["name"] | "N/A");
-
-        Serial.print("Public repositories: ");
-        Serial.println(doc["public_repos"] | 0);
-
-        Serial.print("Followers: ");
-        Serial.println(doc["followers"] | 0);
-
-        Serial.print("Following: ");
-        Serial.println(doc["following"] | 0);
-
-        Serial.println("====================================");
-    }
-    else
-    {
-        Serial.print("GitHub API request failed. HTTP code: ");
-        Serial.println(httpCode);
-
-        if (httpCode > 0)
-        {
-            Serial.println(http.getString());
-        }
-    }
-
-    http.end();
-}
-
-void setup()
-{
+void setup() {
     Serial.begin(115200);
     delay(1000);
 
-    Serial.println("\nGitHub Badge 2026");
+    Serial.println("\nRFID CARD ANALYZER v1.0");
 
-    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
+    SPI.begin(
+        RFID_SCK,
+        RFID_MISO,
+        RFID_MOSI,
+        RFID_SS
+    );
 
-    tft.init(240, 320);
-    tft.setRotation(1);
+    rfid.PCD_Init();
+    delay(50);
 
-    drawBadge();
+    byte version = rfid.PCD_ReadRegister(
+        MFRC522::VersionReg
+    );
 
-    Serial.println("TFT initialized.");
+    Serial.print("RC522 version: 0x");
+    printHex(version);
+    Serial.println();
 
-    connectWiFi();
+    if (version == 0x00 || version == 0xFF) {
+        Serial.println("ERROR: Reader communication failed.");
+        while (true) delay(1000);
+    }
 
-    fetchGitHubProfile();
-
-    Serial.println("\nBadge initialization complete.");
+    Serial.println("Reader ready.");
+    Serial.println("Place a card near the reader.");
 }
 
-void loop()
-{
-    // Nothing to update yet.
+void loop() {
+    if (!rfid.PICC_IsNewCardPresent()) {
+        return;
+    }
+
+    if (!rfid.PICC_ReadCardSerial()) {
+        return;
+    }
+
+    analyzeCard();
+
+    delay(1000);
 }
