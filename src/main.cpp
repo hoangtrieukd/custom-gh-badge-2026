@@ -1,14 +1,15 @@
-
 #include <Arduino.h>
 #include <SPI.h>
-#include <string.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
+#include <string.h>
 
 // =====================================================
-// TFT CONFIGURATION
+// GITHUB BADGE ESP32 - MILESTONE 1
+// Boot screen + launcher shell
 // =====================================================
 
+// TFT wiring (existing working configuration)
 #define TFT_CS 8
 #define TFT_RST 10
 #define TFT_DC 9
@@ -21,8 +22,12 @@
 
 Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 
+// Keep this serial alias because it is part of the user's
+// currently working ESP32-S3 project configuration.
+#define Serial HWCDCSerial
+
 // =====================================================
-// BUTTON CONFIGURATION
+// BUTTONS
 // =====================================================
 
 #define BUTTON_UP 4
@@ -31,11 +36,12 @@ Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 #define BUTTON_RIGHT 7
 #define BUTTON_SELECT 15
 #define BUTTON_MENU 0  // Built-in BOOT button
-#define BUTTON_BACK 16 // External BACK button
+#define BUTTON_BACK 16 // User-confirmed BACK wiring
 
 #define DEBOUNCE_MS 40
 #define SELECT_LONG_PRESS_MS 800
-#define Serial HWCDCSerial
+
+void drawLauncher();
 
 struct Button
 {
@@ -57,668 +63,412 @@ Button buttons[] = {
     {"MENU", BUTTON_MENU, HIGH, HIGH, 0, 0, false},
     {"BACK", BUTTON_BACK, HIGH, HIGH, 0, 0, false}};
 
-const int BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
+const size_t BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
 
 // =====================================================
-// GAME CONFIGURATION
+// COLOUR PALETTE
 // =====================================================
 
-#define BOARD_COLS 10
-#define BOARD_ROWS 20
-#define CELL_SIZE 10
-
-#define BOARD_X 20
-#define BOARD_Y 20
-
-#define FALL_INTERVAL 600
-
-uint8_t board[BOARD_ROWS][BOARD_COLS] = {0};
-
-int score = 0;
-bool gameOver = false;
-
-unsigned long lastFallTime = 0;
+const uint16_t COL_BG = 0x1082; // deep blue-grey
+const uint16_t COL_PANEL = 0x2126;
+const uint16_t COL_PANEL2 = 0x2948;
+const uint16_t COL_WHITE = 0xFFFF;
+const uint16_t COL_MUTED = 0x9CF3;
+const uint16_t COL_CYAN = 0x07FF;
+const uint16_t COL_GREEN = 0x07E0;
+const uint16_t COL_YELLOW = 0xFFE0;
+const uint16_t COL_ORANGE = 0xFD20;
+const uint16_t COL_PINK = 0xF81F;
+const uint16_t COL_BLACK = 0x0000;
 
 // =====================================================
-// COLORS
+// APPLICATION MODEL
+// These are launcher placeholders for Milestone 1.
+// We will replace/expand them with the real 2026 app
+// collection as we port applications to the ESP32.
 // =====================================================
 
-const uint16_t pieceColors[] = {
-    0,
-    0x07FF, // I - Cyan
-    0xFFE0, // O - Yellow
-    0xF81F, // T - Magenta
-    0xFD20, // L - Orange
-    0x001F, // J - Blue
-    0x07E0, // S - Green
-    0xF800  // Z - Red
+struct AppEntry
+{
+    const char *name;
+    const char *subtitle;
+    const char *symbol;
+    uint16_t accent;
 };
 
-// =====================================================
-// TETROMINO SHAPES
-// =====================================================
+AppEntry apps[] = {
+    {"GAMES", "Play badge games", "G", COL_PINK},
+    {"TOOLS", "Badge utilities", "T", COL_CYAN},
+    {"GITHUB", "GitHub experience", "GH", COL_GREEN},
+    {"SETTINGS", "Device settings", "S", COL_ORANGE}};
 
-const uint8_t shapes[7][4][4] = {
-
-    // I
-    {
-        {0, 0, 0, 0},
-        {1, 1, 1, 1},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // O
-    {
-        {0, 1, 1, 0},
-        {0, 1, 1, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // T
-    {
-        {0, 1, 0, 0},
-        {1, 1, 1, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // L
-    {
-        {0, 0, 1, 0},
-        {1, 1, 1, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // J
-    {
-        {1, 0, 0, 0},
-        {1, 1, 1, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // S
-    {
-        {0, 1, 1, 0},
-        {1, 1, 0, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}},
-
-    // Z
-    {
-        {1, 1, 0, 0},
-        {0, 1, 1, 0},
-        {0, 0, 0, 0},
-        {0, 0, 0, 0}}};
+const int APP_COUNT = sizeof(apps) / sizeof(apps[0]);
 
 // =====================================================
-// CURRENT PIECE
+// UI STATE
 // =====================================================
 
-struct Piece
+enum ScreenState
 {
-    uint8_t type;
-    int x;
-    int y;
-    uint8_t rotation;
+    SCREEN_BOOT,
+    SCREEN_LAUNCHER,
+    SCREEN_APP
 };
 
-Piece currentPiece;
+ScreenState currentScreen = SCREEN_BOOT;
+int selectedApp = 0;
+int openedApp = 0;
+
+unsigned long bootStartedAt = 0;
+unsigned long lastBootFrameAt = 0;
+uint8_t bootFrame = 0;
 
 // =====================================================
-// PIECE ROTATION
+// DRAW HELPERS
 // =====================================================
 
-// Returns the value of a cell after rotation.
-// Rotation is clockwise.
-
-bool pieceCell(
-    uint8_t type,
-    int row,
-    int col,
-    uint8_t rotation)
+void drawCenteredText(const char *text, int y, uint8_t size,
+                      uint16_t colour)
 {
-    int r = row;
-    int c = col;
+    tft.setTextSize(size);
+    tft.setTextColor(colour);
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(text, 0, y, &x1, &y1, &w, &h);
+    int x = (SCREEN_WIDTH - (int)w) / 2;
+    tft.setCursor(x, y);
+    tft.print(text);
+}
 
-    for (int i = 0; i < rotation; i++)
-    {
-        int oldR = r;
-        r = 3 - c;
-        c = oldR;
-    }
+void drawHeader(const char *section)
+{
+    tft.fillRect(0, 0, SCREEN_WIDTH, 34, COL_PANEL);
+    tft.setTextSize(1);
+    tft.setTextColor(COL_CYAN);
+    tft.setCursor(12, 8);
+    tft.print("GITHUB");
+    tft.setTextColor(COL_WHITE);
+    tft.setCursor(12, 19);
+    tft.print("UNIVERSE BADGE");
 
-    return shapes[type][r][c];
+    tft.setTextColor(COL_MUTED);
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(section, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor(SCREEN_WIDTH - (int)w - 12, 13);
+    tft.print(section);
+}
+
+void drawFooter(const char *hint)
+{
+    tft.fillRect(0, 218, SCREEN_WIDTH, 22, COL_PANEL);
+    tft.setTextSize(1);
+    tft.setTextColor(COL_MUTED);
+    tft.setCursor(10, 226);
+    tft.print(hint);
 }
 
 // =====================================================
-// DISPLAY FUNCTIONS
+// BOOT SCREEN
 // =====================================================
 
-void drawCell(int x, int y, uint16_t color)
+void drawBootScreen()
 {
+    tft.fillScreen(COL_BG);
 
-    int screenX = BOARD_X + x * CELL_SIZE;
-    int screenY = BOARD_Y + y * CELL_SIZE;
+    // Simple badge-style mark made from vector shapes.
+    // This is an original placeholder graphic, not the
+    // official GitHub logo artwork.
+    int cx = SCREEN_WIDTH / 2;
+    int cy = 91;
 
-    tft.fillRect(
-        screenX + 1,
-        screenY + 1,
-        CELL_SIZE - 2,
-        CELL_SIZE - 2,
-        color);
+    tft.fillRoundRect(cx - 35, cy - 35, 70, 70, 18, COL_PANEL2);
+    tft.drawRoundRect(cx - 35, cy - 35, 70, 70, 18, COL_CYAN);
+    tft.fillCircle(cx, cy - 5, 17, COL_WHITE);
+    tft.fillCircle(cx - 6, cy - 8, 3, COL_BG);
+    tft.fillCircle(cx + 6, cy - 8, 3, COL_BG);
+    tft.fillRoundRect(cx - 9, cy + 4, 18, 5, 2, COL_BG);
+
+    drawCenteredText("GITHUB UNIVERSE", 145, 2, COL_WHITE);
+    drawCenteredText("BADGE", 169, 2, COL_CYAN);
+
+    // Animated progress indicator.
+    tft.drawRoundRect(75, 205, 170, 8, 4, COL_MUTED);
+    int fillWidth = 12 + (bootFrame % 9) * 18;
+    if (fillWidth > 164)
+        fillWidth = 164;
+    tft.fillRoundRect(78, 208, fillWidth, 2, 1, COL_GREEN);
 }
 
-void drawScore()
+void startBoot()
 {
-
-    tft.fillRect(
-        145, 85,
-        165, 35,
-        ST77XX_BLACK);
-
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_YELLOW);
-    tft.setCursor(150, 90);
-    tft.print(score);
+    currentScreen = SCREEN_BOOT;
+    bootStartedAt = millis();
+    lastBootFrameAt = 0;
+    bootFrame = 0;
+    drawBootScreen();
+    Serial.println("UI: boot screen");
 }
 
-void drawBoard()
+void updateBoot()
 {
+    unsigned long now = millis();
 
-    // Clear board area
-    tft.fillRect(
-        BOARD_X,
-        BOARD_Y,
-        BOARD_COLS * CELL_SIZE,
-        BOARD_ROWS * CELL_SIZE,
-        ST77XX_BLACK);
-
-    // Draw locked pieces
-    for (int row = 0; row < BOARD_ROWS; row++)
+    if (now - lastBootFrameAt >= 120)
     {
-
-        for (int col = 0; col < BOARD_COLS; col++)
-        {
-
-            if (board[row][col] != 0)
-            {
-
-                drawCell(
-                    col,
-                    row,
-                    pieceColors[board[row][col]]);
-            }
-        }
+        lastBootFrameAt = now;
+        bootFrame++;
+        drawBootScreen();
     }
 
-    // Draw current falling piece
-    if (!gameOver)
+    // Boot screen lasts about 2 seconds, unless a button
+    // is pressed. Any press can skip the intro.
+    if (now - bootStartedAt >= 2000)
     {
-
-        for (int row = 0; row < 4; row++)
-        {
-
-            for (int col = 0; col < 4; col++)
-            {
-
-                if (pieceCell(
-                        currentPiece.type,
-                        row,
-                        col,
-                        currentPiece.rotation))
-                {
-
-                    int x = currentPiece.x + col;
-                    int y = currentPiece.y + row;
-
-                    if (
-                        x >= 0 &&
-                        x < BOARD_COLS &&
-                        y >= 0 &&
-                        y < BOARD_ROWS)
-                    {
-
-                        drawCell(
-                            x,
-                            y,
-                            pieceColors[currentPiece.type + 1]);
-                    }
-                }
-            }
-        }
+        currentScreen = SCREEN_LAUNCHER;
+        drawLauncher();
+        Serial.println("UI: launcher ready");
     }
-
-    // Draw grid
-    for (int col = 0; col <= BOARD_COLS; col++)
-    {
-
-        int x = BOARD_X + col * CELL_SIZE;
-
-        tft.drawLine(
-            x, BOARD_Y,
-            x, BOARD_Y + BOARD_ROWS * CELL_SIZE,
-            0x4208);
-    }
-
-    for (int row = 0; row <= BOARD_ROWS; row++)
-    {
-
-        int y = BOARD_Y + row * CELL_SIZE;
-
-        tft.drawLine(
-            BOARD_X, y,
-            BOARD_X + BOARD_COLS * CELL_SIZE, y,
-            0x4208);
-    }
-
-    // Board border
-    tft.drawRect(
-        BOARD_X,
-        BOARD_Y,
-        BOARD_COLS * CELL_SIZE,
-        BOARD_ROWS * CELL_SIZE,
-        ST77XX_WHITE);
 }
 
-void drawGameOver()
+// =====================================================
+// LAUNCHER
+// =====================================================
+
+void drawAppCard(int index, int x, int y, int w, int h)
 {
+    bool selected = (index == selectedApp);
+    uint16_t border = selected ? COL_CYAN : COL_PANEL2;
+    uint16_t background = selected ? 0x294D : COL_PANEL;
 
-    tft.fillRect(
-        145, 155,
-        165, 60,
-        ST77XX_BLACK);
+    tft.fillRoundRect(x, y, w, h, 9, background);
+    tft.drawRoundRect(x, y, w, h, 9, border);
 
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_RED);
-    tft.setCursor(150, 160);
-    tft.print("GAME OVER");
+    // Icon tile
+    tft.fillRoundRect(x + 10, y + 10, 38, 38, 8, apps[index].accent);
+    tft.setTextColor(COL_BLACK);
+    tft.setTextSize((strlen(apps[index].symbol) > 1) ? 1 : 2);
+
+    int16_t x1, y1;
+    uint16_t tw, th;
+    tft.getTextBounds(apps[index].symbol, 0, 0, &x1, &y1, &tw, &th);
+    tft.setCursor(x + 10 + (38 - (int)tw) / 2,
+                  y + 10 + (38 - (int)th) / 2);
+    tft.print(apps[index].symbol);
 
     tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(150, 190);
-    tft.print("SELECT: Restart");
-}
+    tft.setTextColor(selected ? COL_CYAN : COL_WHITE);
+    tft.setCursor(x + 57, y + 14);
+    tft.print(apps[index].name);
 
-void drawInterface()
-{
+    tft.setTextColor(COL_MUTED);
+    tft.setCursor(x + 57, y + 30);
+    tft.print(apps[index].subtitle);
 
-    tft.fillScreen(ST77XX_BLACK);
-
-    // Title
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_CYAN);
-    tft.setCursor(150, 25);
-    tft.print("TETRIS");
-
-    // Score label
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(150, 75);
-    tft.print("SCORE");
-
-    // Controls
-    tft.setCursor(150, 135);
-    tft.print("CONTROLS");
-
-    tft.setCursor(150, 150);
-    tft.print("LEFT/RIGHT: Move");
-
-    tft.setCursor(150, 165);
-    tft.print("DOWN: Faster");
-
-    tft.setCursor(150, 180);
-    tft.print("UP: Rotate");
-
-    tft.setCursor(150, 195);
-    tft.print("SELECT: Restart");
-
-    drawScore();
-}
-
-// =====================================================
-// COLLISION DETECTION
-// =====================================================
-
-bool canMove(int newX, int newY)
-{
-
-    for (int row = 0; row < 4; row++)
+    if (selected)
     {
-
-        for (int col = 0; col < 4; col++)
-        {
-
-            if (!pieceCell(
-                    currentPiece.type,
-                    row,
-                    col,
-                    currentPiece.rotation))
-            {
-                continue;
-            }
-
-            int x = newX + col;
-            int y = newY + row;
-
-            // Left and right boundaries
-            if (x < 0 || x >= BOARD_COLS)
-            {
-                return false;
-            }
-
-            // Bottom boundary
-            if (y >= BOARD_ROWS)
-            {
-                return false;
-            }
-
-            // Existing locked pieces
-            if (y >= 0 && board[y][x] != 0)
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-// =====================================================
-// SPAWN PIECE
-// =====================================================
-
-void spawnPiece()
-{
-
-    currentPiece.type = random(0, 7);
-    currentPiece.x = 3;
-    currentPiece.y = 0;
-    currentPiece.rotation = 0;
-
-    if (!canMove(currentPiece.x, currentPiece.y))
-    {
-
-        gameOver = true;
-
-        Serial.println("GAME OVER");
+        tft.fillCircle(x + w - 12, y + h - 12, 3, COL_CYAN);
     }
 }
 
-// =====================================================
-// ROTATION
-// =====================================================
-
-void rotatePiece()
+void drawLauncher()
 {
+    tft.fillScreen(COL_BG);
+    drawHeader("HOME");
 
-    uint8_t oldRotation = currentPiece.rotation;
+    // Four launcher tiles in a 2 x 2 grid.
+    drawAppCard(0, 12, 47, 145, 72);
+    drawAppCard(1, 163, 47, 145, 72);
+    drawAppCard(2, 12, 127, 145, 72);
+    drawAppCard(3, 163, 127, 145, 72);
 
-    currentPiece.rotation =
-        (currentPiece.rotation + 1) % 4;
+    drawFooter("D-PAD: MOVE   SELECT: OPEN   BACK: EXIT");
+}
 
-    if (!canMove(currentPiece.x, currentPiece.y))
-    {
+void moveSelection(int dx, int dy)
+{
+    int col = selectedApp % 2;
+    int row = selectedApp / 2;
 
-        // Cancel invalid rotation
-        currentPiece.rotation = oldRotation;
-    }
+    col += dx;
+    row += dy;
+
+    if (col < 0)
+        col = 1;
+    if (col > 1)
+        col = 0;
+    if (row < 0)
+        row = 1;
+    if (row > 1)
+        row = 0;
+
+    selectedApp = row * 2 + col;
+    drawLauncher();
+
+    Serial.print("APP SELECTED: ");
+    Serial.println(apps[selectedApp].name);
 }
 
 // =====================================================
-// LINE CLEARING AND SCORING
+// APP PLACEHOLDER SCREEN
 // =====================================================
 
-void clearCompletedLines()
+void drawAppScreen()
 {
+    tft.fillScreen(COL_BG);
+    drawHeader(apps[openedApp].name);
 
-    int linesCleared = 0;
+    tft.fillRoundRect(24, 57, 272, 112, 12, COL_PANEL);
+    tft.drawRoundRect(24, 57, 272, 112, 12, apps[openedApp].accent);
 
-    for (int row = BOARD_ROWS - 1; row >= 0; row--)
-    {
+    drawCenteredText(apps[openedApp].name, 82, 2, COL_WHITE);
+    drawCenteredText("COMING SOON", 116, 2, apps[openedApp].accent);
+    drawCenteredText("This app will be ported", 145, 1, COL_MUTED);
 
-        bool full = true;
+    drawFooter("BACK: RETURN TO LAUNCHER");
+}
 
-        for (int col = 0; col < BOARD_COLS; col++)
-        {
+void openSelectedApp()
+{
+    openedApp = selectedApp;
+    currentScreen = SCREEN_APP;
+    drawAppScreen();
 
-            if (board[row][col] == 0)
-            {
+    Serial.print("APP OPENED: ");
+    Serial.println(apps[openedApp].name);
+}
 
-                full = false;
-                break;
-            }
-        }
-
-        if (full)
-        {
-
-            linesCleared++;
-
-            // Shift all rows above downward
-            for (int r = row; r > 0; r--)
-            {
-
-                for (int c = 0; c < BOARD_COLS; c++)
-                {
-
-                    board[r][c] = board[r - 1][c];
-                }
-            }
-
-            // Clear top row
-            memset(board[0], 0, sizeof(board[0]));
-
-            // Recheck this row after shifting
-            row++;
-        }
-    }
-
-    // Score based on lines cleared simultaneously
-    switch (linesCleared)
-    {
-
-    case 1:
-        score += 100;
-        break;
-
-    case 2:
-        score += 300;
-        break;
-
-    case 3:
-        score += 500;
-        break;
-
-    case 4:
-        score += 800;
-        break;
-    }
-
-    if (linesCleared > 0)
-    {
-
-        Serial.print("LINES CLEARED: ");
-        Serial.println(linesCleared);
-
-        Serial.print("SCORE: ");
-        Serial.println(score);
-
-        drawScore();
-    }
+void returnToLauncher()
+{
+    currentScreen = SCREEN_LAUNCHER;
+    drawLauncher();
+    Serial.println("UI: returned to launcher");
 }
 
 // =====================================================
-// LOCK PIECE
+// INPUT ACTIONS
 // =====================================================
 
-void lockPiece()
+void handleButtonAction(const char *name)
 {
-
-    for (int row = 0; row < 4; row++)
-    {
-
-        for (int col = 0; col < 4; col++)
-        {
-
-            if (!pieceCell(
-                    currentPiece.type,
-                    row,
-                    col,
-                    currentPiece.rotation))
-            {
-                continue;
-            }
-
-            int x = currentPiece.x + col;
-            int y = currentPiece.y + row;
-
-            if (y < 0)
-            {
-
-                gameOver = true;
-                return;
-            }
-
-            if (
-                x >= 0 &&
-                x < BOARD_COLS &&
-                y < BOARD_ROWS)
-            {
-
-                board[y][x] = currentPiece.type + 1;
-            }
-        }
-    }
-
-    clearCompletedLines();
-
-    spawnPiece();
-}
-
-// =====================================================
-// MOVEMENT
-// =====================================================
-
-void moveDown()
-{
-
-    if (canMove(currentPiece.x, currentPiece.y + 1))
-    {
-
-        currentPiece.y++;
-    }
-    else
-    {
-
-        lockPiece();
-    }
-}
-
-// =====================================================
-// GAME RESTART
-// =====================================================
-
-void restartGame()
-{
-
-    memset(board, 0, sizeof(board));
-
-    score = 0;
-    gameOver = false;
-
-    spawnPiece();
-
-    lastFallTime = millis();
-
-    drawInterface();
-    drawBoard();
-
-    if (gameOver)
-    {
-        drawGameOver();
-    }
-
-    Serial.println("GAME RESTARTED");
-}
-
-// =====================================================
-// BUTTON EVENTS
-// =====================================================
-
-void onButtonPressed(const char *name)
-{
-    // Emit a machine-readable event for the future Mac simulator.
     Serial.print("{\"event\":\"pressed\",\"button\":\"");
     Serial.print(name);
     Serial.println("\"}");
 
-    // A short SELECT press restarts the current Tetris game.
-    if (strcmp(name, "SELECT") == 0)
+    // HOME always returns to launcher.
+    if (strcmp(name, "HOME") == 0)
     {
-        restartGame();
+        returnToLauncher();
         return;
     }
 
-    // These controls are reserved for badge-level navigation.
-    // The simulator will handle their actual menu/navigation behavior.
-    if (
-        strcmp(name, "MENU") == 0 ||
-        strcmp(name, "BACK") == 0 ||
-        strcmp(name, "HOME") == 0)
+    // MENU opens the launcher from any screen.
+    if (strcmp(name, "MENU") == 0)
     {
+        returnToLauncher();
+        Serial.println("UI: MENU");
         return;
     }
 
-    if (gameOver)
+    if (currentScreen == SCREEN_BOOT)
     {
+        currentScreen = SCREEN_LAUNCHER;
+        drawLauncher();
+        Serial.println("UI: boot skipped");
         return;
     }
 
-    // LEFT
-    if (strcmp(name, "LEFT") == 0)
+    if (currentScreen == SCREEN_APP)
     {
-
-        if (canMove(currentPiece.x - 1, currentPiece.y))
+        if (strcmp(name, "BACK") == 0)
         {
-
-            currentPiece.x--;
+            returnToLauncher();
         }
+        return;
     }
 
-    // RIGHT
-    else if (strcmp(name, "RIGHT") == 0)
+    if (currentScreen != SCREEN_LAUNCHER)
+        return;
+
+    if (strcmp(name, "UP") == 0)
     {
-
-        if (canMove(currentPiece.x + 1, currentPiece.y))
-        {
-
-            currentPiece.x++;
-        }
+        moveSelection(0, -1);
     }
-
-    // DOWN
     else if (strcmp(name, "DOWN") == 0)
     {
+        moveSelection(0, 1);
+    }
+    else if (strcmp(name, "LEFT") == 0)
+    {
+        moveSelection(-1, 0);
+    }
+    else if (strcmp(name, "RIGHT") == 0)
+    {
+        moveSelection(1, 0);
+    }
+    else if (strcmp(name, "SELECT") == 0)
+    {
+        openSelectedApp();
+    }
+    else if (strcmp(name, "BACK") == 0)
+    {
+        // On the home screen BACK has no parent screen.
+        Serial.println("UI: already at launcher");
+    }
+}
 
-        moveDown();
+// =====================================================
+// BUTTON SCANNING
+// =====================================================
 
-        if (!gameOver)
+void scanButtons(unsigned long now)
+{
+    for (size_t i = 0; i < BUTTON_COUNT; i++)
+    {
+        Button &button = buttons[i];
+        bool reading = digitalRead(button.pin);
+
+        if (reading != button.lastReading)
         {
-            lastFallTime = millis();
+            button.lastChangeTime = now;
+            button.lastReading = reading;
         }
-    }
 
-    // UP - ROTATE
-    else if (strcmp(name, "UP") == 0)
-    {
+        if ((now - button.lastChangeTime) >= DEBOUNCE_MS)
+        {
+            if (reading != button.stableState)
+            {
+                button.stableState = reading;
 
-        rotatePiece();
-    }
+                if (reading == LOW)
+                {
+                    button.pressStartTime = now;
+                    button.longPressHandled = false;
 
-    drawBoard();
+                    if (strcmp(button.name, "SELECT") != 0)
+                    {
+                        handleButtonAction(button.name);
+                    }
+                }
+                else if (strcmp(button.name, "SELECT") == 0)
+                {
+                    if (!button.longPressHandled)
+                    {
+                        handleButtonAction("SELECT");
+                    }
+                }
+            }
+        }
 
-    if (gameOver)
-    {
-        drawGameOver();
+        // Long SELECT = HOME. It is detected while held.
+        if (strcmp(button.name, "SELECT") == 0 &&
+            button.stableState == LOW &&
+            !button.longPressHandled &&
+            now - button.pressStartTime >= SELECT_LONG_PRESS_MS)
+        {
+            button.longPressHandled = true;
+            handleButtonAction("HOME");
+        }
     }
 }
 
@@ -728,45 +478,33 @@ void onButtonPressed(const char *name)
 
 void setup()
 {
-
     Serial.begin(115200);
-    delay(500);
+    delay(300);
 
-    // Initialize TFT
-    SPI.begin(
-        TFT_SCLK,
-        TFT_MISO,
-        TFT_MOSI,
-        TFT_CS);
+    SPI.begin(TFT_SCLK, TFT_MISO, TFT_MOSI, TFT_CS);
 
     tft.init(240, 320);
     tft.setRotation(1);
     tft.invertDisplay(false);
 
-    // Initialize buttons
-    for (int i = 0; i < BUTTON_COUNT; i++)
+    for (size_t i = 0; i < BUTTON_COUNT; i++)
     {
-
         pinMode(buttons[i].pin, INPUT_PULLUP);
-
-        buttons[i].lastReading =
-            digitalRead(buttons[i].pin);
-
-        buttons[i].stableState =
-            buttons[i].lastReading;
-
+        buttons[i].lastReading = digitalRead(buttons[i].pin);
+        buttons[i].stableState = buttons[i].lastReading;
         buttons[i].lastChangeTime = millis();
     }
 
-    // Random piece generation
-    randomSeed(esp_random());
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println(" GITHUB BADGE ESP32");
+    Serial.println(" MILESTONE 1: BOOT + LAUNCHER");
+    Serial.println("==============================");
+    Serial.println("BACK = GPIO 16");
+    Serial.println("MENU = BOOT / GPIO 0");
+    Serial.println("HOME = hold SELECT for 800 ms");
 
-    // Start game
-    restartGame();
-
-    Serial.println("========================");
-    Serial.println("      TETRIS READY");
-    Serial.println("========================");
+    startBoot();
 }
 
 // =====================================================
@@ -777,76 +515,10 @@ void loop()
 {
     unsigned long now = millis();
 
-    // Button polling and debounce
-    for (int i = 0; i < BUTTON_COUNT; i++)
+    scanButtons(now);
+
+    if (currentScreen == SCREEN_BOOT)
     {
-        bool reading = digitalRead(buttons[i].pin);
-
-        if (reading != buttons[i].lastReading)
-        {
-            buttons[i].lastChangeTime = now;
-            buttons[i].lastReading = reading;
-        }
-
-        if ((now - buttons[i].lastChangeTime) >= DEBOUNCE_MS)
-        {
-            if (reading != buttons[i].stableState)
-            {
-                buttons[i].stableState = reading;
-
-                // Button pressed
-                if (reading == LOW)
-                {
-                    buttons[i].pressStartTime = now;
-                    buttons[i].longPressHandled = false;
-
-                    // SELECT is handled on release or as a long press.
-                    // Other buttons trigger immediately on press.
-                    if (strcmp(buttons[i].name, "SELECT") != 0)
-                    {
-                        onButtonPressed(buttons[i].name);
-                    }
-                }
-                // Button released
-                else if (strcmp(buttons[i].name, "SELECT") == 0)
-                {
-                    // If the long press did not trigger, treat this as
-                    // a normal short SELECT press.
-                    if (!buttons[i].longPressHandled)
-                    {
-                        onButtonPressed("SELECT");
-                    }
-                }
-            }
-        }
-
-        // Detect SELECT long press while the button is still held.
-        if (
-            strcmp(buttons[i].name, "SELECT") == 0 &&
-            buttons[i].stableState == LOW &&
-            !buttons[i].longPressHandled &&
-            now - buttons[i].pressStartTime >= SELECT_LONG_PRESS_MS)
-        {
-            buttons[i].longPressHandled = true;
-            onButtonPressed("HOME");
-        }
-    }
-
-    // Automatic falling
-    if (
-        !gameOver &&
-        now - lastFallTime >= FALL_INTERVAL)
-    {
-
-        lastFallTime = now;
-
-        moveDown();
-
-        drawBoard();
-
-        if (gameOver)
-        {
-            drawGameOver();
-        }
+        updateBoot();
     }
 }
