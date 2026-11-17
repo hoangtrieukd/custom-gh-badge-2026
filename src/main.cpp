@@ -30,8 +30,12 @@ Adafruit_ST7789 tft(TFT_CS, TFT_DC, TFT_RST);
 #define BUTTON_LEFT 6
 #define BUTTON_RIGHT 7
 #define BUTTON_SELECT 15
+#define BUTTON_MENU 0  // Built-in BOOT button
+#define BUTTON_BACK 16 // External BACK button
 
 #define DEBOUNCE_MS 40
+#define SELECT_LONG_PRESS_MS 800
+#define Serial HWCDCSerial
 
 struct Button
 {
@@ -40,14 +44,18 @@ struct Button
     bool lastReading;
     bool stableState;
     unsigned long lastChangeTime;
+    unsigned long pressStartTime;
+    bool longPressHandled;
 };
 
 Button buttons[] = {
-    {"UP", BUTTON_UP, HIGH, HIGH, 0},
-    {"DOWN", BUTTON_DOWN, HIGH, HIGH, 0},
-    {"LEFT", BUTTON_LEFT, HIGH, HIGH, 0},
-    {"RIGHT", BUTTON_RIGHT, HIGH, HIGH, 0},
-    {"SELECT", BUTTON_SELECT, HIGH, HIGH, 0}};
+    {"UP", BUTTON_UP, HIGH, HIGH, 0, 0, false},
+    {"DOWN", BUTTON_DOWN, HIGH, HIGH, 0, 0, false},
+    {"LEFT", BUTTON_LEFT, HIGH, HIGH, 0, 0, false},
+    {"RIGHT", BUTTON_RIGHT, HIGH, HIGH, 0, 0, false},
+    {"SELECT", BUTTON_SELECT, HIGH, HIGH, 0, 0, false},
+    {"MENU", BUTTON_MENU, HIGH, HIGH, 0, 0, false},
+    {"BACK", BUTTON_BACK, HIGH, HIGH, 0, 0, false}};
 
 const int BUTTON_COUNT = sizeof(buttons) / sizeof(buttons[0]);
 
@@ -638,15 +646,25 @@ void restartGame()
 
 void onButtonPressed(const char *name)
 {
+    // Emit a machine-readable event for the future Mac simulator.
+    Serial.print("{\"event\":\"pressed\",\"button\":\"");
+    Serial.print(name);
+    Serial.println("\"}");
 
-    Serial.print("BUTTON PRESSED: ");
-    Serial.println(name);
-
-    // SELECT restarts the game
+    // A short SELECT press restarts the current Tetris game.
     if (strcmp(name, "SELECT") == 0)
     {
-
         restartGame();
+        return;
+    }
+
+    // These controls are reserved for badge-level navigation.
+    // The simulator will handle their actual menu/navigation behavior.
+    if (
+        strcmp(name, "MENU") == 0 ||
+        strcmp(name, "BACK") == 0 ||
+        strcmp(name, "HOME") == 0)
+    {
         return;
     }
 
@@ -757,36 +775,60 @@ void setup()
 
 void loop()
 {
-
     unsigned long now = millis();
 
     // Button polling and debounce
     for (int i = 0; i < BUTTON_COUNT; i++)
     {
-
         bool reading = digitalRead(buttons[i].pin);
 
         if (reading != buttons[i].lastReading)
         {
-
             buttons[i].lastChangeTime = now;
             buttons[i].lastReading = reading;
         }
 
         if ((now - buttons[i].lastChangeTime) >= DEBOUNCE_MS)
         {
-
             if (reading != buttons[i].stableState)
             {
-
                 buttons[i].stableState = reading;
 
+                // Button pressed
                 if (reading == LOW)
                 {
+                    buttons[i].pressStartTime = now;
+                    buttons[i].longPressHandled = false;
 
-                    onButtonPressed(buttons[i].name);
+                    // SELECT is handled on release or as a long press.
+                    // Other buttons trigger immediately on press.
+                    if (strcmp(buttons[i].name, "SELECT") != 0)
+                    {
+                        onButtonPressed(buttons[i].name);
+                    }
+                }
+                // Button released
+                else if (strcmp(buttons[i].name, "SELECT") == 0)
+                {
+                    // If the long press did not trigger, treat this as
+                    // a normal short SELECT press.
+                    if (!buttons[i].longPressHandled)
+                    {
+                        onButtonPressed("SELECT");
+                    }
                 }
             }
+        }
+
+        // Detect SELECT long press while the button is still held.
+        if (
+            strcmp(buttons[i].name, "SELECT") == 0 &&
+            buttons[i].stableState == LOW &&
+            !buttons[i].longPressHandled &&
+            now - buttons[i].pressStartTime >= SELECT_LONG_PRESS_MS)
+        {
+            buttons[i].longPressHandled = true;
+            onButtonPressed("HOME");
         }
     }
 
